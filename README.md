@@ -1,2 +1,2 @@
 # woocommerce-sift-science
-Sift Science cloud-based machine learning magical anti-fraud plugin for WooCommerce.
+Sift Science anti-fraud / chargeback prevention plugin for WooCommerce.
