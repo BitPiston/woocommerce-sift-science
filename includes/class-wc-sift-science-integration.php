@@ -65,6 +65,8 @@ class WC_Sift_Science_Integration extends WC_Integration
         add_action('wp_logout', [$this, 'logout_action']);
         add_action('user_register', [$this, 'create_account_action'], 10, 1);
         add_action('profile_update', [$this, 'update_account_action'], 10, 2);
+        add_action('woocommerce_add_to_cart', [$this, 'add_to_cart_action'], 10, 6);
+        add_action('woocommerce_remove_cart_item', [$this, 'remove_from_cart_action'], 10, 2);
     }
 
     /**
@@ -410,5 +412,44 @@ class WC_Sift_Science_Integration extends WC_Integration
         }
 
         return $item;
+    }
+
+    /**
+     * Calls the add_item_to_cart event at the woocommerce_add_to_cart action.
+     *
+     * @param int $item_key Cart item key.
+     * @param int $product_id Product ID.
+     * @param int $quantity Quantity.
+     * @param int $variation_id Product variation ID.
+	 * @param array $variation Product variation attributes.
+	 * @param array $item_data Cart item data.
+     * @return void
+     */
+    public function add_to_cart_action($item_key, $product_id, $quantity, $variation_id, $variation, $item_data)
+    {
+        $this->api_call('$add_item_to_cart', [
+            '$user_id'    => $this->get_user_id(),
+            '$session_id' => $this->get_session_id(),
+            '$item'       => $this->get_item_fields( $variation_id ? $variation_id : $product_id, $quantity )
+        ]);
+    }
+
+    /**
+     * Calls the remove_item_from_cart event at the woocommerce_remove_cart_item action.
+     *
+     * @param int $item_key Cart item key.
+     * @param \WC_Cart $cart Cart instance.
+     * @return void
+     */
+    public function remove_from_cart_action($item_key, $cart)
+    {
+        $product_id = $cart->cart_contents[ $item_key ]['product_id'];
+        $quantity   = $cart->cart_contents[ $item_key ]['quantity'];
+
+        $this->api_call('$remove_item_from_cart', [
+            '$user_id'    => $this->get_user_id(),
+            '$session_id' => $this->get_session_id(),
+            '$item'       => $this->get_item_fields($product_id, $quantity)
+        ]);
     }
 }
