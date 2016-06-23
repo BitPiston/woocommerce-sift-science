@@ -63,6 +63,8 @@ class WC_Sift_Science_Integration extends WC_Integration
         add_action('wp_login', [$this, 'login_action'], 10, 2);
         add_action('wp_login_failed', [$this, 'login_failed_action'], 10, 1);
         add_action('wp_logout', [$this, 'logout_action']);
+        add_action('user_register', [$this, 'create_account_action'], 10, 1);
+        add_action('profile_update', [$this, 'update_account_action'], 10, 2);
     }
 
     /**
@@ -136,18 +138,20 @@ class WC_Sift_Science_Integration extends WC_Integration
         if ( $user ) {
             if ( is_numeric($user) ) {
                 $user = get_user_by('ID', $user);
-            } elseif ( is_email($user) ) {
-                $user = get_user_by('email', $user);
-            } elseif ( ! is_object($user) ) {
-                $user = get_user_by('login', $user);
-            } elseif ( 'WP_User' != get_class($user) ) {
+            } elseif ( is_string($user) ) {
+                if ( is_email($user) ) {
+                    $user = get_user_by('email', $user);
+                } else {
+                    $user = get_user_by('login', $user);
+                }
+            } elseif ( is_object($user) && 'WP_User' != get_class($user) ) {
                 $user = false;
             }
         } elseif ( is_user_logged_in() ) {
             $user = wp_get_current_user();
         }
 
-        return false != $user ? strtolower($user->user_email) : '';
+        return false !== $user ? strtolower($user->user_email) : '';
     }
 
     /**
@@ -215,7 +219,7 @@ class WC_Sift_Science_Integration extends WC_Integration
 
         $response = $client->track($event, $properties, $client::DEFAULT_TIMEOUT, null, false, $return_action);
 
-        if (0 != $response->apiErrorMessage) {
+        if ( 0 != $response->apiErrorMessage ) {
             $this->log($response->apiErrorMessage);
         }
 
@@ -271,5 +275,140 @@ class WC_Sift_Science_Integration extends WC_Integration
         $this->api_call('$logout', [
             '$user_id' => $this->get_user_id(),
         ]);
+    }
+
+    /**
+     * Helper to set the conditional profile / billing fields.
+     *
+     * @param array $data Request attributes. Required.
+     * @param array $meta User's meta data. Required.
+     * @return array $data Updated request attributes.
+     */
+    public function set_conditional_fields($data, $meta)
+    {
+        if ( isset($meta['first_name']) && isset($meta['last_name']) ) {
+            $data['$name']                          = $meta['first_name'] . ' ' . $meta['last_name'];
+        }
+        if ( isset($meta['billing_first_name']) && isset($meta['billing_last_name']) ) {
+            $data['$billing_address']['$name']      = $meta['billing_first_name'] . ' ' . $meta['billing_last_name'];
+        }
+        if ( isset($meta['billing_phone']) ) {
+            $data['$billing_address']['$phone']     = $meta['billing_phone'];
+        }
+        if ( isset($meta['billing_address_1']) ) {
+            $data['$billing_address']['$address_1'] = $meta['billing_address_1'];
+        }
+        if ( isset($meta['billing_address_2']) ) {
+            $data['$billing_address']['$address_2'] = $meta['billing_address_2'];
+        }
+        if ( isset($meta['billing_city']) ) {
+            $data['$billing_address']['$city']      = $meta['billing_city'];
+        }
+        if ( isset($meta['billing_state']) ) {
+            $data['$billing_address']['$region']    = $meta['billing_state'];
+        }
+        if ( isset($meta['billing_country']) ) {
+            $data['$billing_address']['$country']   = $meta['billing_country'];
+        }
+        if ( isset($meta['billing_postcode']) ) {
+            $data['$billing_address']['$zipcode']   = $meta['billing_postcode'];
+        }
+
+        return $data;
+    }
+
+    /**
+     * Calls the create_account event at the user_register action.
+     *
+     * @param int $user_id WP user ID.
+     * @return void
+     */
+    public function create_account_action($user_id)
+    {
+        $data = [
+            '$user_id'    => $this->get_user_id($user_id),
+            '$session_id' => $this->get_session_id()
+        ];
+        $data['$user_email'] = $data['$user_id'];
+
+        $meta = get_user_meta($user_id);
+
+        $data = $this->set_conditional_fields($data, $meta);
+
+        $this->api_call('$create_account', $data);
+    }
+
+    /**
+     * Calls the update_account event at the profile_update action.
+     *
+     * @param int $user_id WP user ID.
+     * @param WP_User $old_user Old WP user object before changes.
+     * @return void
+     */
+    public function update_account_action($user_id, $old_user_data)
+    {
+        $user = get_user_by('id', $user_id);
+
+        $data = [
+            '$user_id'          => $this->get_user_id($user),
+            '$session_id'       => $this->get_session_id(),
+            '$changed_password' => isset($old_user_data->user_pass) && $user->user_pass !== $old_user_data->user_pass
+        ];
+        $data['$user_email'] = $data['$user_id'];
+
+        $meta = get_user_meta($user_id);
+
+        $data = $this->set_conditional_fields($data, $meta);
+
+        $this->api_call('$update_account', $data);
+    }
+
+    /**
+     * Formats the price as micros.
+     *
+     * @param float $price Price as decimal.
+     * @return int Price as micros.
+     */
+    public function price_to_micros($price)
+    {
+        return $price * 1000000;
+    }
+
+    /**
+     * Helper to get the $item attributes.
+     *
+     * @param int $product_id Product or variation ID.
+     * @return int Quantity, defaults to 1.
+     */
+    public function get_item_fields($product_id, $quantity = 1)
+    {
+        $product = wc_get_product($product_id);
+
+        $item = [
+            '$item_id'        => $product_id,
+            '$product_title'  => $product->get_title(),
+            '$price'          => $this->price_to_micros( $product->get_price() ),
+            '$currency_code'  => get_woocommerce_currency(),
+            '$quantity'       => $quantity
+        ];
+
+        if ( $sku = $product->get_sku() ) {
+            $item['$sku']      = $sku;
+        }
+        // Sift only accepts a single category as a string unlike tags so use the formatted list minus HTML?
+        if ( $categories = get_the_terms($product_id, 'product_cat') ) {
+            $category_names = [];
+
+            foreach ($categories as $category) {
+                $category_names[] = $category->name;
+            }
+
+            $item['$category'] = implode(', ', $category_names);
+        }
+        if ( $tags = get_the_terms($product_id, 'product_tag') ) {
+            $item['$tags']     = $tags;
+        }
+
+        return $item;
     }
 }
